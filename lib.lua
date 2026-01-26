@@ -657,7 +657,7 @@ do
         local DisplayLabel = Library:CreateLabel({
             Size = UDim2.new(1, 0, 0, 14);
             Position = UDim2.fromOffset(5, 5);
-            TextXAlignment = Enum.TextXAlignment.Left;
+            TextXAlignment = Enum.TextXAlignment.Center;
             TextSize = 14;
             Text = ColorPicker.Title,--Info.Default;
             TextWrapped = false;
