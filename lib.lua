@@ -3336,7 +3336,7 @@ function Library:CreateWindow(...)
 
             Library:Create('UIListLayout', {
                 FillDirection = Enum.FillDirection.Horizontal;
-                HorizontalAlignment = Enum.HorizontalAlignment.Left;
+                HorizontalAlignment = Enum.HorizontalAlignment.Center;
                 SortOrder = Enum.SortOrder.LayoutOrder;
                 Parent = TabboxButtons;
             });
