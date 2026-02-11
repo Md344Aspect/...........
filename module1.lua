@@ -1,188 +1,249 @@
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
+local Players        = game:GetService("Players")
+local RunService     = game:GetService("RunService")
+local LocalPlayer    = Players.LocalPlayer
+local Workspace      = game:GetService("Workspace")
+local CurrentCamera  = Workspace.CurrentCamera
 
-local LocalPlayer = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
+local ESP = {}
+ESP.__index = ESP
+local DEFAULT_SETTINGS = {
+    Enabled          = true,
+    MaxDistance      = 3000,
 
-local Overlay = {}
-Overlay.__index = Overlay
+    TeamCheck        = true,
+    VisibleCheck     = false,      -- requires raycast / canSee check
 
-Overlay.DefaultSettings = {
-    Enabled = false,
-    MaxDistance = 2000,
-    TeamCheck = false,
-    UseLineOfSight = false,
+    BoxEnabled       = true,
+    NameEnabled      = true,
+    DistanceEnabled  = true,
+    HealthBarEnabled = true,
+    TracerEnabled    = false,      -- optional future feature
 
-    ShowBox = true,
-    ShowName = true,
-    ShowDistance = true,
-    ShowHealth = true,
+    BoxColor         = Color3.fromRGB(220, 30, 30),
+    TextColor        = Color3.fromRGB(255, 255, 255),
+    HealthHigh       = Color3.fromRGB(60, 255, 80),
+    HealthLow        = Color3.fromRGB(220, 40, 40),
 
-    BoxColor = Color3.fromRGB(0,170,255),
-    TextColor = Color3.fromRGB(255,255,255),
+    NameFont         = Enum.Font.SourceSansBold,
+    NameTextSize     = 14,
+    DistanceTextSize = 12,
 }
 
--- Utility: merge defaults
-local function merge(defaults, custom)
-    local result = {}
-    for k,v in pairs(defaults) do
-        result[k] = v
-    end
-    if custom then
-        for k,v in pairs(custom) do
-            result[k] = v
+function ESP.new(customSettings)
+    local self = setmetatable({}, ESP)
+
+    self.Settings  = table.clone(DEFAULT_SETTINGS)
+    self.Active    = {}
+    self.Connections = {}
+    self.UpdateConnection = nil
+
+    if customSettings then
+        for k, v in pairs(customSettings) do
+            if self.Settings[k] ~= nil then
+                self.Settings[k] = v
+            end
         end
     end
-    return result
-end
 
-function Overlay.new(settings)
-    local self = setmetatable({}, Overlay)
-    self.Settings = merge(Overlay.DefaultSettings, settings)
-    self.Objects = {}
-    self.Connection = nil
-    self:_init()
+    self:_setup()
     return self
 end
 
--- Create UI container once per player
-function Overlay:_createObject(player)
-    local frame = Instance.new("Frame")
-    frame.BackgroundTransparency = 1
-    frame.BorderSizePixel = 0
-    frame.Visible = false
-    frame.Parent = game.CoreGui
+function ESP:_setup()
+    -- Initial players
+    for _, player in Players:GetPlayers() do
+        if player ~= LocalPlayer then
+            task.spawn(self._tryTrackPlayer, self, player)
+        end
+    end
 
-    local box = Instance.new("Frame")
-    box.BorderSizePixel = 2
-    box.BackgroundTransparency = 1
-    box.Parent = frame
+    -- Player events
+    table.insert(self.Connections, Players.PlayerAdded:Connect(function(player)
+        task.spawn(self._tryTrackPlayer, self, player)
+    end))
 
+    table.insert(self.Connections, Players.PlayerRemoving:Connect(function(player)
+        self:_destroyESP(player)
+    end))
+
+    -- Main update loop (single connection – better performance)
+    self.UpdateConnection = RunService.RenderStepped:Connect(function()
+        self:_updateAll()
+    end)
+end
+
+function ESP:_tryTrackPlayer(player)
+    if player.Character then
+        task.spawn(self._onCharacterAdded, self, player, player.Character)
+    end
+
+    player.CharacterAdded:Connect(function(char)
+        task.delay(0.1, function()
+            self:_onCharacterAdded(player, char)
+        end)
+    end)
+end
+
+function ESP:_onCharacterAdded(player, character)
+    local root    = character:WaitForChild("HumanoidRootPart", 8)
+    local humanoid = character:WaitForChild("Humanoid", 8)
+
+    if not (root and humanoid) then
+        return
+    end
+
+    self:_createESP(player, root, humanoid)
+end
+
+function ESP:_createESP(player, rootPart, humanoid)
+    self:_destroyESP(player) -- clean previous if exists
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name              = "ESP"
+    billboard.Adornee           = rootPart
+    billboard.AlwaysOnTop       = true
+    billboard.Size              = UDim2.new(5, 0, 6, 0)
+    billboard.StudsOffset       = Vector3.new(0, 3.2, 0)
+    billboard.LightInfluence    = 0
+    billboard.Parent            = rootPart
+
+    -- Box
+    local boxFrame = Instance.new("Frame")
+    boxFrame.Size               = UDim2.fromScale(1,1)
+    boxFrame.BackgroundTransparency = 1
+    boxFrame.BorderSizePixel    = 0
+    boxFrame.Parent             = billboard
+
+    local uiStroke = Instance.new("UIStroke")
+    uiStroke.Color              = self.Settings.BoxColor
+    uiStroke.Thickness          = 1.6
+    uiStroke.Transparency       = 0.1
+    uiStroke.ApplyStrokeMode    = Enum.ApplyStrokeMode.Border
+    uiStroke.Parent             = boxFrame
+
+    -- Name
     local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size              = UDim2.new(1,0,0.22,0)
+    nameLabel.Position          = UDim2.new(0,0,-0.28,0)
     nameLabel.BackgroundTransparency = 1
-    nameLabel.TextScaled = true
-    nameLabel.Font = Enum.Font.SourceSansBold
-    nameLabel.Parent = frame
+    nameLabel.TextColor3        = self.Settings.TextColor
+    nameLabel.TextStrokeTransparency = 0.7
+    nameLabel.TextStrokeColor3  = Color3.new(0,0,0)
+    nameLabel.Font              = self.Settings.NameFont
+    nameLabel.TextSize          = self.Settings.NameTextSize
+    nameLabel.TextScaled        = true
+    nameLabel.TextXAlignment    = Enum.TextXAlignment.Center
+    nameLabel.Parent            = billboard
 
-    self.Objects[player] = {
-        Frame = frame,
-        Box = box,
-        Name = nameLabel,
+    -- Health bar background
+    local healthBG = Instance.new("Frame")
+    healthBG.Size               = UDim2.new(0.06, 0, 0.9, 0)
+    healthBG.Position           = UDim2.new(-0.12, 0, 0.05, 0)
+    healthBG.BackgroundColor3   = Color3.new(0.08, 0.08, 0.08)
+    healthBG.BorderSizePixel    = 0
+    healthBG.Parent             = billboard
+
+    local healthFill = Instance.new("Frame")
+    healthFill.Size             = UDim2.new(1,0,1,0)
+    healthFill.BorderSizePixel  = 0
+    healthFill.Parent           = healthBG
+
+    self.Active[player] = {
+        Billboard   = billboard,
+        NameLabel   = nameLabel,
+        HealthFill  = healthFill,
+        Stroke      = uiStroke,
+        Humanoid    = humanoid,
+        RootPart    = rootPart,
     }
 end
 
-function Overlay:_removeObject(player)
-    if self.Objects[player] then
-        self.Objects[player].Frame:Destroy()
-        self.Objects[player] = nil
-    end
-end
-
-function Overlay:_isVisible(root)
-    if not self.Settings.UseLineOfSight then
-        return true
-    end
-
-    local rayParams = RaycastParams.new()
-    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
-    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-
-    local direction = (root.Position - Camera.CFrame.Position)
-    local result = Workspace:Raycast(Camera.CFrame.Position, direction, rayParams)
-
-    return not result or result.Instance:IsDescendantOf(root.Parent)
-end
-
-function Overlay:_update()
+function ESP:_updateAll()
     if not self.Settings.Enabled then
-        for _, obj in pairs(self.Objects) do
-            obj.Frame.Visible = false
+        for _, data in pairs(self.Active) do
+            data.Billboard.Enabled = false
         end
         return
     end
 
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
+    local lpPos = CurrentCamera.CFrame.Position
 
-            if not self.Objects[player] then
-                self:_createObject(player)
-            end
+    for player, data in pairs(self.Active) do
+        local root = data.RootPart
+        if not root or not root.Parent then
+            self:_destroyESP(player)
+            continue
+        end
 
-            local obj = self.Objects[player]
-            local char = player.Character
-            local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-            local root = char and char:FindFirstChild("HumanoidRootPart")
+        local distance = (root.Position - lpPos).Magnitude
+        if distance > self.Settings.MaxDistance then
+            data.Billboard.Enabled = false
+            continue
+        end
 
-            if not char or not root or not humanoid then
-                obj.Frame.Visible = false
-                continue
-            end
+        if self.Settings.TeamCheck and player.Team == LocalPlayer.Team then
+            data.Billboard.Enabled = false
+            continue
+        end
 
-            if self.Settings.TeamCheck and player.Team == LocalPlayer.Team then
-                obj.Frame.Visible = false
-                continue
-            end
+        -- Visible check (optional – can be expanded later)
+        -- if self.Settings.VisibleCheck and not self:_isVisible(root) then ...
 
-            local distance = (root.Position - Camera.CFrame.Position).Magnitude
-            if distance > self.Settings.MaxDistance then
-                obj.Frame.Visible = false
-                continue
-            end
+        data.Billboard.Enabled = true
 
-            if not self:_isVisible(root) then
-                obj.Frame.Visible = false
-                continue
-            end
+        -- Name + distance
+        if self.Settings.NameEnabled then
+            local distStr = self.Settings.DistanceEnabled and (" [" .. math.floor(distance) .. "]") or ""
+            data.NameLabel.Text = player.Name .. distStr
+        else
+            data.NameLabel.Text = ""
+        end
 
-            local screenPos, onScreen = Camera:WorldToViewportPoint(root.Position)
-            if not onScreen then
-                obj.Frame.Visible = false
-                continue
-            end
+        -- Health
+        if self.Settings.HealthBarEnabled and data.Humanoid then
+            local hp  = data.Humanoid.Health
+            local max = data.Humanoid.MaxHealth
+            local percent = math.clamp(hp / max, 0, 1)
 
-            -- Dynamic scaling
-            local scale = math.clamp(1 / (distance / 600), 0.5, 2)
-            local width = 60 * scale
-            local height = 100 * scale
-
-            obj.Frame.Size = UDim2.fromOffset(width, height)
-            obj.Frame.Position = UDim2.fromOffset(screenPos.X - width/2, screenPos.Y - height/2)
-            obj.Frame.Visible = true
-
-            -- Box
-            obj.Box.Size = UDim2.fromScale(1,1)
-            obj.Box.BorderColor3 = self.Settings.BoxColor
-            obj.Box.Visible = self.Settings.ShowBox
-
-            -- Name
-            obj.Name.Size = UDim2.new(1,0,0.2,0)
-            obj.Name.Position = UDim2.new(0,0,-0.2,0)
-            obj.Name.TextColor3 = self.Settings.TextColor
-            obj.Name.Visible = self.Settings.ShowName
-            obj.Name.Text = player.Name
+            data.HealthFill.Size = UDim2.new(1, 0, percent, 0)
+            data.HealthFill.BackgroundColor3 = self.Settings.HealthLow:Lerp(
+                self.Settings.HealthHigh,
+                percent
+            )
         end
     end
 end
 
-function Overlay:_init()
-    self.Connection = RunService.RenderStepped:Connect(function()
-        self:_update()
-    end)
-
-    Players.PlayerRemoving:Connect(function(player)
-        self:_removeObject(player)
-    end)
+function ESP:_destroyESP(player)
+    local data = self.Active[player]
+    if data then
+        if data.Billboard then
+            data.Billboard:Destroy()
+        end
+        self.Active[player] = nil
+    end
 end
 
-function Overlay:Destroy()
-    if self.Connection then
-        self.Connection:Disconnect()
+function ESP:Destroy()
+    if self.UpdateConnection then
+        self.UpdateConnection:Disconnect()
+        self.UpdateConnection = nil
     end
-    for _, obj in pairs(self.Objects) do
-        obj.Frame:Destroy()
+
+    for _, conn in ipairs(self.Connections) do
+        conn:Disconnect()
     end
-    self.Objects = {}
+    self.Connections = {}
+
+    for player in pairs(self.Active) do
+        self:_destroyESP(player)
+    end
+    self.Active = {}
 end
 
-return Overlay
+-- Optional: toggle visibility
+function ESP:Toggle(enabled)
+    self.Settings.Enabled = enabled ~= false
+end
+
+return ESP
