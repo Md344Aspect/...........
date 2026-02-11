@@ -1,41 +1,51 @@
-local Players        = game:GetService("Players")
-local RunService     = game:GetService("RunService")
-local LocalPlayer    = Players.LocalPlayer
-local Workspace      = game:GetService("Workspace")
-local CurrentCamera  = Workspace.CurrentCamera
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+local CurrentCamera = Workspace.CurrentCamera
 
 local ESP = {}
 ESP.__index = ESP
+
+-- ──────────────────────────────────────────────────────────────
+-- Configuration
+-- ──────────────────────────────────────────────────────────────
 local DEFAULT_SETTINGS = {
-    Enabled          = true,
-    MaxDistance      = 3000,
+    Enabled = true,
+    MaxDistance = 3000,
 
-    TeamCheck        = true,
-    VisibleCheck     = false,      -- requires raycast / canSee check
+    TeamCheck = true,
+    VisibleCheck = false, -- Add raycast if enabled later
 
-    BoxEnabled       = true,
-    NameEnabled      = true,
-    DistanceEnabled  = true,
+    BoxEnabled = true,
+    BoxType = "2D", -- "2D" for outlines, "Corner" for corners, "3D" for parts (less perf)
+    NameEnabled = true,
+    DistanceEnabled = true,
     HealthBarEnabled = true,
-    TracerEnabled    = false,      -- optional future feature
+    TracerEnabled = true,
+    SkeletonEnabled = false, -- Optional
 
-    BoxColor         = Color3.fromRGB(220, 30, 30),
-    TextColor        = Color3.fromRGB(255, 255, 255),
-    HealthHigh       = Color3.fromRGB(60, 255, 80),
-    HealthLow        = Color3.fromRGB(220, 40, 40),
+    BoxColor = Color3.fromRGB(220, 30, 30),
+    TextColor = Color3.fromRGB(255, 255, 255),
+    HealthHigh = Color3.fromRGB(60, 255, 80),
+    HealthLow = Color3.fromRGB(220, 40, 40),
+    TracerColor = Color3.fromRGB(220, 30, 30),
 
-    NameFont         = Enum.Font.SourceSansBold,
-    NameTextSize     = 14,
-    DistanceTextSize = 12,
+    NameFont = Enum.Font.SourceSansBold,
+    NameTextSize = 14,
 }
 
+-- ──────────────────────────────────────────────────────────────
+-- Constructor
+-- ──────────────────────────────────────────────────────────────
 function ESP.new(customSettings)
     local self = setmetatable({}, ESP)
 
-    self.Settings  = table.clone(DEFAULT_SETTINGS)
-    self.Active    = {}
+    self.Settings = table.clone(DEFAULT_SETTINGS)
+    self.Active = {}
     self.Connections = {}
     self.UpdateConnection = nil
+    self.Drawings = {} -- For 2D elements
 
     if customSettings then
         for k, v in pairs(customSettings) do
@@ -49,15 +59,16 @@ function ESP.new(customSettings)
     return self
 end
 
+-- ──────────────────────────────────────────────────────────────
+-- Setup
+-- ──────────────────────────────────────────────────────────────
 function ESP:_setup()
-    -- Initial players
     for _, player in Players:GetPlayers() do
         if player ~= LocalPlayer then
             task.spawn(self._tryTrackPlayer, self, player)
         end
     end
 
-    -- Player events
     table.insert(self.Connections, Players.PlayerAdded:Connect(function(player)
         task.spawn(self._tryTrackPlayer, self, player)
     end))
@@ -66,7 +77,6 @@ function ESP:_setup()
         self:_destroyESP(player)
     end))
 
-    -- Main update loop (single connection – better performance)
     self.UpdateConnection = RunService.RenderStepped:Connect(function()
         self:_updateAll()
     end)
@@ -77,171 +87,214 @@ function ESP:_tryTrackPlayer(player)
         task.spawn(self._onCharacterAdded, self, player, player.Character)
     end
 
-    player.CharacterAdded:Connect(function(char)
-        task.delay(0.1, function()
-            self:_onCharacterAdded(player, char)
-        end)
-    end)
+    table.insert(self.Connections, player.CharacterAdded:Connect(function(char)
+        task.delay(0.1, self._onCharacterAdded, self, player, char)
+    end))
 end
 
 function ESP:_onCharacterAdded(player, character)
-    local root    = character:WaitForChild("HumanoidRootPart", 8)
+    local root = character:WaitForChild("HumanoidRootPart", 8)
     local humanoid = character:WaitForChild("Humanoid", 8)
+    local head = character:WaitForChild("Head", 8)
 
-    if not (root and humanoid) then
-        return
-    end
-
-    self:_createESP(player, root, humanoid)
-end
-
-function ESP:_createESP(player, rootPart, humanoid)
-    self:_destroyESP(player) -- clean previous if exists
-
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name              = "ESP"
-    billboard.Adornee           = rootPart
-    billboard.AlwaysOnTop       = true
-    billboard.Size              = UDim2.new(5, 0, 6, 0)
-    billboard.StudsOffset       = Vector3.new(0, 3.2, 0)
-    billboard.LightInfluence    = 0
-    billboard.Parent            = rootPart
-
-    -- Box
-    local boxFrame = Instance.new("Frame")
-    boxFrame.Size               = UDim2.fromScale(1,1)
-    boxFrame.BackgroundTransparency = 1
-    boxFrame.BorderSizePixel    = 0
-    boxFrame.Parent             = billboard
-
-    local uiStroke = Instance.new("UIStroke")
-    uiStroke.Color              = self.Settings.BoxColor
-    uiStroke.Thickness          = 1.6
-    uiStroke.Transparency       = 0.1
-    uiStroke.ApplyStrokeMode    = Enum.ApplyStrokeMode.Border
-    uiStroke.Parent             = boxFrame
-
-    -- Name
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Size              = UDim2.new(1,0,0.22,0)
-    nameLabel.Position          = UDim2.new(0,0,-0.28,0)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.TextColor3        = self.Settings.TextColor
-    nameLabel.TextStrokeTransparency = 0.7
-    nameLabel.TextStrokeColor3  = Color3.new(0,0,0)
-    nameLabel.Font              = self.Settings.NameFont
-    nameLabel.TextSize          = self.Settings.NameTextSize
-    nameLabel.TextScaled        = true
-    nameLabel.TextXAlignment    = Enum.TextXAlignment.Center
-    nameLabel.Parent            = billboard
-
-    -- Health bar background
-    local healthBG = Instance.new("Frame")
-    healthBG.Size               = UDim2.new(0.06, 0, 0.9, 0)
-    healthBG.Position           = UDim2.new(-0.12, 0, 0.05, 0)
-    healthBG.BackgroundColor3   = Color3.new(0.08, 0.08, 0.08)
-    healthBG.BorderSizePixel    = 0
-    healthBG.Parent             = billboard
-
-    local healthFill = Instance.new("Frame")
-    healthFill.Size             = UDim2.new(1,0,1,0)
-    healthFill.BorderSizePixel  = 0
-    healthFill.Parent           = healthBG
+    if not (root and humanoid and head) then return end
 
     self.Active[player] = {
-        Billboard   = billboard,
-        NameLabel   = nameLabel,
-        HealthFill  = healthFill,
-        Stroke      = uiStroke,
-        Humanoid    = humanoid,
-        RootPart    = rootPart,
+        Character = character,
+        RootPart = root,
+        Head = head,
+        Humanoid = humanoid,
     }
+
+    self:_createDrawings(player)
 end
 
+-- ──────────────────────────────────────────────────────────────
+-- 2D Drawings Creation
+-- ──────────────────────────────────────────────────────────────
+function ESP:_createDrawings(player)
+    self.Drawings[player] = {}
+
+    -- Box (Quad for 2D outline)
+    local box = Drawing.new("Quad")
+    box.Visible = false
+    box.Color = self.Settings.BoxColor
+    box.Thickness = 1.5
+    box.Transparency = 1
+    box.Filled = false
+    self.Drawings[player].Box = box
+
+    -- Name Text
+    local nameText = Drawing.new("Text")
+    nameText.Visible = false
+    nameText.Color = self.Settings.TextColor
+    nameText.Size = self.Settings.NameTextSize
+    nameText.Center = true
+    nameText.Outline = true
+    nameText.Font = Drawing.Fonts.UI
+    self.Drawings[player].Name = nameText
+
+    -- Health Bar (Line + BG)
+    local healthBG = Drawing.new("Line")
+    healthBG.Visible = false
+    healthBG.Color = Color3.new(0.1, 0.1, 0.1)
+    healthBG.Thickness = 3
+    self.Drawings[player].HealthBG = healthBG
+
+    local healthLine = Drawing.new("Line")
+    healthLine.Visible = false
+    healthLine.Thickness = 1.5
+    self.Drawings[player].Health = healthLine
+
+    -- Tracer
+    local tracer = Drawing.new("Line")
+    tracer.Visible = false
+    tracer.Color = self.Settings.TracerColor
+    tracer.Thickness = 1.5
+    self.Drawings[player].Tracer = tracer
+end
+
+-- ──────────────────────────────────────────────────────────────
+-- Update Loop
+-- ──────────────────────────────────────────────────────────────
 function ESP:_updateAll()
     if not self.Settings.Enabled then
-        for _, data in pairs(self.Active) do
-            data.Billboard.Enabled = false
+        for _, drawings in pairs(self.Drawings) do
+            for _, obj in pairs(drawings) do
+                obj.Visible = false
+            end
         end
         return
     end
 
-    local lpPos = CurrentCamera.CFrame.Position
+    local camCFrame = CurrentCamera.CFrame
+    local camPos = camCFrame.Position
+    local screenSize = CurrentCamera.ViewportSize
+    local tracerFrom = Vector2.new(screenSize.X / 2, screenSize.Y) -- Bottom center
 
     for player, data in pairs(self.Active) do
         local root = data.RootPart
-        if not root or not root.Parent then
-            self:_destroyESP(player)
+        if not root or not data.Character.Parent then
+            self:_hideDrawings(player)
             continue
         end
 
-        local distance = (root.Position - lpPos).Magnitude
+        local distance = (root.Position - camPos).Magnitude
         if distance > self.Settings.MaxDistance then
-            data.Billboard.Enabled = false
+            self:_hideDrawings(player)
             continue
         end
 
         if self.Settings.TeamCheck and player.Team == LocalPlayer.Team then
-            data.Billboard.Enabled = false
+            self:_hideDrawings(player)
             continue
         end
 
-        -- Visible check (optional – can be expanded later)
-        -- if self.Settings.VisibleCheck and not self:_isVisible(root) then ...
+        -- Get screen positions
+        local headPos, headOnScreen = CurrentCamera:WorldToViewportPoint(data.Head.Position)
+        local torsoPos = root.Position
+        local torsoScreen, torsoOnScreen = CurrentCamera:WorldToViewportPoint(torsoPos)
 
-        data.Billboard.Enabled = true
-
-        -- Name + distance
-        if self.Settings.NameEnabled then
-            local distStr = self.Settings.DistanceEnabled and (" [" .. math.floor(distance) .. "]") or ""
-            data.NameLabel.Text = player.Name .. distStr
-        else
-            data.NameLabel.Text = ""
+        if not (headOnScreen or torsoOnScreen) then
+            self:_hideDrawings(player)
+            continue
         end
 
-        -- Health
+        -- Calculate box size (approximate character bounds)
+        local charSize = (data.Head.Position - (torsoPos - Vector3.new(0, 3, 0))).Magnitude
+        local boxHeight = math.clamp(charSize * (500 / distance), 10, 500)
+        local boxWidth = boxHeight / 2
+
+        local top = Vector2.new(torsoScreen.X, torsoScreen.Y) - Vector2.new(0, boxHeight / 2)
+        local bottom = top + Vector2.new(0, boxHeight)
+        local left = top - Vector2.new(boxWidth / 2, 0)
+        local right = top + Vector2.new(boxWidth / 2, 0)
+
+        -- Box
+        if self.Settings.BoxEnabled then
+            local box = self.Drawings[player].Box
+            box.PointA = bottom + Vector2.new(boxWidth / 2, 0) -- BR
+            box.PointB = bottom - Vector2.new(boxWidth / 2, 0) -- BL
+            box.PointC = top - Vector2.new(boxWidth / 2, 0) -- TL
+            box.PointD = top + Vector2.new(boxWidth / 2, 0) -- TR
+            box.Visible = true
+        end
+
+        -- Name + Distance
+        if self.Settings.NameEnabled then
+            local name = self.Drawings[player].Name
+            local distStr = self.Settings.DistanceEnabled and (" [" .. math.floor(distance) .. "]") or ""
+            name.Text = player.Name .. distStr
+            name.Position = top - Vector2.new(0, name.TextBounds.Y + 2)
+            name.Visible = true
+        end
+
+        -- Health Bar
         if self.Settings.HealthBarEnabled and data.Humanoid then
-            local hp  = data.Humanoid.Health
+            local hp = data.Humanoid.Health
             local max = data.Humanoid.MaxHealth
             local percent = math.clamp(hp / max, 0, 1)
 
-            data.HealthFill.Size = UDim2.new(1, 0, percent, 0)
-            data.HealthFill.BackgroundColor3 = self.Settings.HealthLow:Lerp(
-                self.Settings.HealthHigh,
-                percent
-            )
+            local healthBG = self.Drawings[player].HealthBG
+            healthBG.From = left - Vector2.new(6, 0)
+            healthBG.To = left - Vector2.new(6, -boxHeight)
+            healthBG.Visible = true
+
+            local healthLine = self.Drawings[player].Health
+            healthLine.Color = self.Settings.HealthLow:Lerp(self.Settings.HealthHigh, percent)
+            healthLine.From = healthBG.From
+            healthLine.To = healthBG.From + (healthBG.To - healthBG.From) * percent
+            healthLine.Visible = true
+        end
+
+        -- Tracer
+        if self.Settings.TracerEnabled then
+            local tracer = self.Drawings[player].Tracer
+            tracer.From = tracerFrom
+            tracer.To = Vector2.new(torsoScreen.X, torsoScreen.Y)
+            tracer.Visible = true
         end
     end
 end
 
-function ESP:_destroyESP(player)
-    local data = self.Active[player]
-    if data then
-        if data.Billboard then
-            data.Billboard:Destroy()
+function ESP:_hideDrawings(player)
+    if self.Drawings[player] then
+        for _, obj in pairs(self.Drawings[player]) do
+            obj.Visible = false
         end
+    end
+end
+
+-- ──────────────────────────────────────────────────────────────
+-- Cleanup
+-- ──────────────────────────────────────────────────────────────
+function ESP:_destroyESP(player)
+    if self.Active[player] then
         self.Active[player] = nil
+    end
+    if self.Drawings[player] then
+        for _, obj in pairs(self.Drawings[player]) do
+            obj:Remove()
+        end
+        self.Drawings[player] = nil
     end
 end
 
 function ESP:Destroy()
     if self.UpdateConnection then
         self.UpdateConnection:Disconnect()
-        self.UpdateConnection = nil
     end
-
-    for _, conn in ipairs(self.Connections) do
+    for _, conn in self.Connections do
         conn:Disconnect()
     end
     self.Connections = {}
-
     for player in pairs(self.Active) do
         self:_destroyESP(player)
     end
     self.Active = {}
+    self.Drawings = {}
 end
 
--- Optional: toggle visibility
 function ESP:Toggle(enabled)
     self.Settings.Enabled = enabled ~= false
 end
