@@ -170,11 +170,11 @@ function ESP:_updateAll()
     local camCFrame = CurrentCamera.CFrame
     local camPos = camCFrame.Position
     local screenSize = CurrentCamera.ViewportSize
-    local tracerFrom = Vector2.new(screenSize.X / 2, screenSize.Y) -- Bottom center
+    local tracerFrom = Vector2.new(screenSize.X / 2, screenSize.Y)
 
     for player, data in pairs(self.Active) do
         local root = data.RootPart
-        if not root or not data.Character.Parent then
+        if not root or not data.Character or not data.Character.Parent then
             self:_hideDrawings(player)
             continue
         end
@@ -190,77 +190,71 @@ function ESP:_updateAll()
             continue
         end
 
-        -- Get screen positions
-        local headPos, headOnScreen = CurrentCamera:WorldToViewportPoint(data.Head.Position)
-        local torsoPos = root.Position
-        local torsoScreen, torsoOnScreen = CurrentCamera:WorldToViewportPoint(torsoPos)
+        local headPos, headOnScreen = CurrentCamera:WorldToViewportPoint(data.Head.Position + Vector3.new(0, 0.5, 0))
+        local feetPos, feetOnScreen  = CurrentCamera:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
+        local torsoScreen, _         = CurrentCamera:WorldToViewportPoint(root.Position)
 
-        if not (headOnScreen or torsoOnScreen) then
+        if not (headOnScreen or feetOnScreen) then
             self:_hideDrawings(player)
             continue
         end
 
-        -- Calculate box size (approximate character bounds)
-        local charSize = (data.Head.Position - (torsoPos - Vector3.new(0, 3, 0))).Magnitude
-        local boxHeight = math.clamp(charSize * (500 / distance), 10, 500)
-        local boxWidth = boxHeight / 2
+        -- Better box sizing
+        local boxHeight = math.abs(headPos.Y - feetPos.Y)
+        local boxWidth  = boxHeight * 0.55
+        local centerX   = torsoScreen.X
+        local topY      = math.min(headPos.Y, feetPos.Y)
+        local bottomY   = math.max(headPos.Y, feetPos.Y)
 
-        local top = Vector2.new(torsoScreen.X, torsoScreen.Y) - Vector2.new(0, boxHeight / 2)
-        local bottom = top + Vector2.new(0, boxHeight)
-        local left = top - Vector2.new(boxWidth / 2, 0)
-        local right = top + Vector2.new(boxWidth / 2, 0)
+        local topLeft     = Vector2.new(centerX - boxWidth/2, topY)
+        local topRight    = Vector2.new(centerX + boxWidth/2, topY)
+        local bottomLeft  = Vector2.new(centerX - boxWidth/2, bottomY)
+        local bottomRight = Vector2.new(centerX + boxWidth/2, bottomY)
 
         -- Box
-        if self.Settings.BoxEnabled then
-            local box = self.Drawings[player].Box
-            box.PointA = bottom + Vector2.new(boxWidth / 2, 0) -- BR
-            box.PointB = bottom - Vector2.new(boxWidth / 2, 0) -- BL
-            box.PointC = top - Vector2.new(boxWidth / 2, 0) -- TL
-            box.PointD = top + Vector2.new(boxWidth / 2, 0) -- TR
-            box.Visible = true
+        local box = self.Drawings[player].Box
+        box.Visible     = self.Settings.BoxEnabled
+        if box.Visible then
+            box.PointA = bottomRight
+            box.PointB = bottomLeft
+            box.PointC = topLeft
+            box.PointD = topRight
         end
 
-        -- Name + Distance
-        if self.Settings.NameEnabled then
-            local name = self.Drawings[player].Name
-            local distStr = self.Settings.DistanceEnabled and (" [" .. math.floor(distance) .. "]") or ""
+        -- Name
+        local name = self.Drawings[player].Name
+        name.Visible = self.Settings.NameEnabled
+        if name.Visible then
+            local distStr = self.Settings.DistanceEnabled and (" ["..math.floor(distance).."]") or ""
             name.Text = player.Name .. distStr
-            name.Position = top - Vector2.new(0, name.TextBounds.Y + 2)
-            name.Visible = true
+            name.Position = Vector2.new(centerX, topY - name.Size - 4)
         end
 
-        -- Health Bar
+        -- Health bar
+        local healthBG  = self.Drawings[player].HealthBG
+        local healthBar = self.Drawings[player].Health
         if self.Settings.HealthBarEnabled and data.Humanoid then
-            local hp = data.Humanoid.Health
-            local max = data.Humanoid.MaxHealth
-            local percent = math.clamp(hp / max, 0, 1)
+            local percent = math.clamp(data.Humanoid.Health / data.Humanoid.MaxHealth, 0, 1)
 
-            local healthBG = self.Drawings[player].HealthBG
-            healthBG.From = left - Vector2.new(6, 0)
-            healthBG.To = left - Vector2.new(6, -boxHeight)
+            healthBG.From    = Vector2.new(topLeft.X - 6, topY)
+            healthBG.To      = Vector2.new(topLeft.X - 6, bottomY)
             healthBG.Visible = true
 
-            local healthLine = self.Drawings[player].Health
-            healthLine.Color = self.Settings.HealthLow:Lerp(self.Settings.HealthHigh, percent)
-            healthLine.From = healthBG.From
-            healthLine.To = healthBG.From + (healthBG.To - healthBG.From) * percent
-            healthLine.Visible = true
+            healthBar.From   = healthBG.From
+            healthBar.To     = healthBG.From + Vector2.new(0, (healthBG.To.Y - healthBG.From.Y) * percent)
+            healthBar.Color  = self.Settings.HealthLow:Lerp(self.Settings.HealthHigh, percent)
+            healthBar.Visible = true
+        else
+            healthBG.Visible  = false
+            healthBar.Visible = false
         end
 
         -- Tracer
-        if self.Settings.TracerEnabled then
-            local tracer = self.Drawings[player].Tracer
+        local tracer = self.Drawings[player].Tracer
+        tracer.Visible = self.Settings.TracerEnabled
+        if tracer.Visible then
             tracer.From = tracerFrom
-            tracer.To = Vector2.new(torsoScreen.X, torsoScreen.Y)
-            tracer.Visible = true
-        end
-    end
-end
-
-function ESP:_hideDrawings(player)
-    if self.Drawings[player] then
-        for _, obj in pairs(self.Drawings[player]) do
-            obj.Visible = false
+            tracer.To   = Vector2.new(centerX, bottomY)
         end
     end
 end
